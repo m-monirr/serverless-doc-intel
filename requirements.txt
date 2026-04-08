@@ -4,6 +4,7 @@ python-multipart==0.0.9
 docling==2.5.0
 langchain-text-splitters==0.2.2
 redis==5.0.6
+fakeredis==2.31.1
 pydantic==2.7.4
 requests==2.32.3
 beam-client==0.2.191
