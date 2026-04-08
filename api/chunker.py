@@ -6,6 +6,12 @@ _converter = None
 _docling_error: Exception | None = None
 
 try:
+	# Preload torch first. On some Windows setups, importing docling (which
+	# transitively imports torch) can fail with WinError 1114 unless torch
+	# has already initialized its DLLs in-process.
+	import torch
+
+	_ = torch.__version__
 	from docling.document_converter import DocumentConverter
 
 	print("Loading Docling converter...")
