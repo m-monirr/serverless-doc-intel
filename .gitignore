@@ -1,5 +1,16 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 .env
 .DS_Store
+sample.pdf
+sample2.pdf
+sample3.pdf
+sample4.pdf
+docs/*_MODAL.txt
+docs/*.zip
+docs/_modal_extract/
+docs/_plan_extract/
+smoke_*.log
+smoke_*.txt

@@ -8,6 +8,8 @@ from typing import Any
 
 import redis
 
+_FAKE_REDIS = None
+
 RATE_LIMIT_UPLOADS = 2
 RATE_LIMIT_WINDOW = 6 * 3600
 
@@ -16,8 +18,23 @@ MD5_CACHE_TTL_SECONDS = 86400
 
 
 def get_redis() -> redis.Redis:
-	"""Create a Redis client from REDIS_URL."""
-	return redis.from_url(os.environ["REDIS_URL"], decode_responses=True)
+	"""Create Redis client and fall back to fakeredis for local development."""
+	global _FAKE_REDIS
+
+	redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+	client = redis.from_url(redis_url, decode_responses=True)
+	try:
+		client.ping()
+		return client
+	except Exception:
+		if os.getenv("ALLOW_FAKE_REDIS", "1") != "1":
+			raise
+
+		import fakeredis
+
+		if _FAKE_REDIS is None:
+			_FAKE_REDIS = fakeredis.FakeRedis(decode_responses=True)
+		return _FAKE_REDIS
 
 
 def init_job(job_id: str, total_chunks: int, file_md5: str | None = None) -> None:
