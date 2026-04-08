@@ -10,6 +10,7 @@ from api.tracker import push_result
 
 
 def _summarize_text(text: str) -> tuple[str, list[str], int]:
+	# Lightweight local summarization fallback used when cloud workers are not active.
 	clean = " ".join(text.split())
 	if not clean:
 		return "No text extracted in this section.", [], 1
@@ -41,6 +42,7 @@ def _summarize_text(text: str) -> tuple[str, list[str], int]:
 
 def process_chunk_local(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 	"""Process one chunk and write result to tracker storage."""
+	# This writes one per-chunk result and increments done_chunks in Redis.
 	chunk_id = int(chunk["chunk_id"])
 	text = str(chunk.get("text", ""))
 

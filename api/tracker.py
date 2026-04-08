@@ -39,6 +39,7 @@ def get_redis() -> redis.Redis:
 
 def init_job(job_id: str, total_chunks: int, file_md5: str | None = None) -> None:
 	"""Create job metadata and set TTL."""
+	# Job hash stores status + counters used by /status and /result endpoints.
 	r = get_redis()
 	r.hset(
 		job_id,
@@ -54,6 +55,7 @@ def init_job(job_id: str, total_chunks: int, file_md5: str | None = None) -> Non
 
 def push_result(job_id: str, result: dict[str, Any]) -> int:
 	"""Atomically append result and increment done counter."""
+	# RPUSH + HINCRBY in one pipeline avoids race issues with concurrent workers.
 	r = get_redis()
 	pipe = r.pipeline()
 	pipe.rpush(f"{job_id}:results", json.dumps(result))
@@ -99,6 +101,7 @@ def _valid_upload_timestamps(entries: list[str]) -> list[float]:
 
 def check_rate_limit(user_ip: str) -> tuple[bool, int]:
 	"""Return whether upload is allowed and currently used uploads."""
+	# Store timestamps per IP and count only entries still inside the time window.
 	r = get_redis()
 	key = f"ratelimit:{user_ip}"
 	entries = r.lrange(key, 0, -1)
@@ -157,5 +160,6 @@ def get_cached_result(file_md5: str) -> dict[str, Any] | None:
 
 def cache_result_by_md5(file_md5: str, output: dict[str, Any]) -> None:
 	"""Store final output by MD5 so duplicate uploads can return instantly."""
+	# Cache TTL lets duplicate file uploads skip OCR + processing work.
 	r = get_redis()
 	r.set(f"md5cache:{file_md5}", json.dumps(output), ex=MD5_CACHE_TTL_SECONDS)
