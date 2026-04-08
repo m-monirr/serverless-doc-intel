@@ -23,8 +23,8 @@ from api.tracker import (
 	push_result,
 	record_upload,
 )
-from beam.aggregator import aggregate
-from beam.worker import process_chunk_local
+from Modal.aggregator import aggregate
+from Modal.worker import process_chunk_local
 
 app = FastAPI(title="Async PDF Pipeline", version="0.1.0")
 logger = logging.getLogger("api.main")
