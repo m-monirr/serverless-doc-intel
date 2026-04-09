@@ -25,6 +25,8 @@ from api.tracker import (
 from Modal.aggregator import aggregate
 from Modal.worker import process_chunk_local
 
+# Service layer for ingest/status/result/quota/stream routes.
+# This keeps API route handlers thin and focused on HTTP wiring.
 logger = logging.getLogger("api.services.ingest_service")
 _executor = ThreadPoolExecutor(max_workers=8)
 
@@ -36,10 +38,12 @@ STREAM_POLL_SECONDS = 0.5
 
 
 def _client_ip(request: Request) -> str:
+	"""Extract caller IP for quota tracking."""
 	return request.client.host if request.client else "unknown"
 
 
 def _enforce_quota_or_raise(user_ip: str) -> int:
+	"""Validate upload quota and return currently used uploads."""
 	allowed, used = check_rate_limit(user_ip)
 	if not allowed:
 		status = get_rate_limit_status(user_ip)
@@ -55,6 +59,7 @@ def _enforce_quota_or_raise(user_ip: str) -> int:
 
 
 def _validate_pdf_bytes(content: bytes) -> None:
+	"""Fail fast on oversized payloads or non-PDF uploads."""
 	if len(content) > MAX_UPLOAD_BYTES:
 		raise HTTPException(status_code=413, detail="File too large. Max 50MB.")
 	if content[:4] != b"%PDF":
@@ -62,6 +67,7 @@ def _validate_pdf_bytes(content: bytes) -> None:
 
 
 def _write_temp_pdf(job_id: str, content: bytes) -> str:
+	"""Persist uploaded bytes to a temporary file for OCR/hash steps."""
 	temp_path = os.path.join(tempfile.gettempdir(), f"{job_id}.pdf")
 	with open(temp_path, "wb") as file_handle:
 		file_handle.write(content)
@@ -71,6 +77,7 @@ def _write_temp_pdf(job_id: str, content: bytes) -> str:
 def _load_chunks_with_dedup(
 	temp_path: str,
 ) -> tuple[str | None, dict[str, Any] | None, list[dict[str, Any]] | None]:
+	"""Return cached result for duplicate files, otherwise extracted chunks."""
 	file_md5 = calculate_file_md5(temp_path)
 	if file_md5:
 		cached = get_cached_result(file_md5)
@@ -84,6 +91,7 @@ def _load_chunks_with_dedup(
 
 
 def _status_payload(job: dict[str, Any]) -> dict[str, Any]:
+	"""Normalize tracker job data into the public status response shape."""
 	total = max(1, int(job["total_chunks"]))
 	done = int(job["done_chunks"])
 	return {
@@ -100,6 +108,7 @@ def _dispatch_chunk_tasks(
 	job_id: str,
 	chunks: list[dict[str, Any]],
 ) -> None:
+	"""Schedule chunk processing in sequential or parallel mode."""
 	if mode == "sequential":
 		background_tasks.add_task(_run_sequential, job_id, chunks)
 	else:
@@ -107,6 +116,7 @@ def _dispatch_chunk_tasks(
 
 
 async def _watch_and_aggregate(job_id: str, total_chunks: int) -> None:
+	"""Wait for chunk completion, then run final aggregation once."""
 	waited = 0
 	loop = asyncio.get_running_loop()
 
@@ -125,12 +135,14 @@ async def _watch_and_aggregate(job_id: str, total_chunks: int) -> None:
 
 
 async def _run_sequential(job_id: str, chunks: list[dict[str, Any]]) -> None:
+	"""Process chunks one-by-one (useful for easier debugging)."""
 	loop = asyncio.get_running_loop()
 	for chunk in chunks:
 		await loop.run_in_executor(_executor, process_chunk_local, job_id, chunk)
 
 
 async def _run_parallel(job_id: str, chunks: list[dict[str, Any]]) -> None:
+	"""Process all chunks concurrently using the shared thread pool."""
 	loop = asyncio.get_running_loop()
 	tasks = [
 		loop.run_in_executor(_executor, process_chunk_local, job_id, chunk)
@@ -145,6 +157,12 @@ async def ingest_pdf(
 	background_tasks: BackgroundTasks,
 	mode: str = "parallel",
 ) -> dict[str, Any] | JSONResponse:
+	"""End-to-end ingest pipeline used by POST /ingest."""
+	# Pipeline stages:
+	# 1) Quota check
+	# 2) Validate + temporarily persist upload
+	# 3) Deduplicate by MD5 or extract chunks
+	# 4) Initialize job state and schedule processing + aggregation watcher
 	user_ip = _client_ip(request)
 	used = _enforce_quota_or_raise(user_ip)
 	job_id = str(uuid4())
@@ -191,6 +209,7 @@ async def ingest_pdf(
 
 
 def get_status(job_id: str) -> dict[str, Any]:
+	"""Public status accessor for GET /status/{job_id}."""
 	job = get_job(job_id)
 	if not job:
 		raise HTTPException(status_code=404, detail="Job not found")
@@ -198,6 +217,7 @@ def get_status(job_id: str) -> dict[str, Any]:
 
 
 def get_result(job_id: str) -> dict[str, Any]:
+	"""Public result accessor for GET /result/{job_id}."""
 	job = get_job(job_id)
 	if not job:
 		raise HTTPException(status_code=404, detail="Job not found")
@@ -213,10 +233,12 @@ def get_result(job_id: str) -> dict[str, Any]:
 
 
 def get_quota(request: Request) -> dict[str, int]:
+	"""Return quota counters for the current caller IP."""
 	return get_rate_limit_status(_client_ip(request))
 
 
 async def stream_events(job_id: str):
+	"""Yield server-sent events for chunk updates and final completion."""
 	seen: set[int] = set()
 	waited = 0.0
 
