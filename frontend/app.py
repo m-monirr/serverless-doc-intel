@@ -1,86 +1,160 @@
 """Streamlit frontend app."""
 
+import json
+import os
 import time
 from typing import Any
 
 import requests
 import streamlit as st
 
-API_BASE = st.secrets.get("api_base", "http://localhost:8000")
+
+def _resolve_api_base() -> str:
+	try:
+		if "api_base" in st.secrets:
+			return str(st.secrets["api_base"]).rstrip("/")
+	except Exception:
+		pass
+	return os.getenv("API_BASE_URL", "http://localhost:8010").rstrip("/")
 
 
-def _get(path: str) -> dict[str, Any]:
-	response = requests.get(f"{API_BASE}{path}", timeout=30)
-	response.raise_for_status()
-	return response.json()
+API_BASE = _resolve_api_base()
 
 
-def _post_file(path: str, file_bytes: bytes, file_name: str) -> dict[str, Any]:
+def _parse_json(response: requests.Response) -> dict[str, Any]:
+	try:
+		return response.json()
+	except json.JSONDecodeError:
+		return {"raw": response.text}
+
+
+def _get(path: str, timeout: int = 30) -> tuple[bool, dict[str, Any]]:
+	try:
+		response = requests.get(f"{API_BASE}{path}", timeout=timeout)
+		payload = _parse_json(response)
+		if response.status_code >= 400:
+			return False, {"status_code": response.status_code, "payload": payload}
+		return True, payload
+	except requests.RequestException as exc:
+		return False, {"error": str(exc)}
+
+
+def _post_file(path: str, file_bytes: bytes, file_name: str) -> tuple[bool, dict[str, Any]]:
 	files = {"file": (file_name, file_bytes, "application/pdf")}
-	response = requests.post(f"{API_BASE}{path}", files=files, timeout=120)
-	if response.status_code >= 400:
-		return {"error": response.text, "status_code": response.status_code}
-	return response.json()
+	try:
+		response = requests.post(f"{API_BASE}{path}", files=files, timeout=600)
+		payload = _parse_json(response)
+		if response.status_code >= 400:
+			return False, {"status_code": response.status_code, "payload": payload}
+		return True, payload
+	except requests.RequestException as exc:
+		return False, {"error": str(exc)}
 
 
-st.set_page_config(page_title="Async PDF Intelligence", page_icon="📄", layout="wide")
+def _render_result(result: dict[str, Any]) -> None:
+	st.subheader("Result")
+	st.markdown("### Abstract")
+	st.write(result.get("abstract", ""))
+
+	st.markdown("### Top Key Points")
+	points = result.get("top_key_points", [])
+	if not points:
+		st.info("No key points were returned.")
+	for point in points:
+		st.write(f"- {point}")
+
+	docs = result.get("documentation", {})
+	st.markdown("### Documentation")
+	for section in ["introduction", "methods", "findings", "conclusion"]:
+		with st.expander(section.capitalize(), expanded=(section == "introduction")):
+			st.write(docs.get(section, ""))
+
+	meta_col1, meta_col2 = st.columns(2)
+	meta_col1.metric("Total Chunks", int(result.get("total_chunks", 0)))
+	meta_col2.metric("Failed Chunks", int(result.get("failed_chunks", 0)))
+
+
+st.set_page_config(page_title="Async PDF Intelligence", page_icon="PDF", layout="wide")
 st.title("Async PDF Intelligence")
-st.caption("Upload a PDF, monitor progress, and view structured analysis.")
+st.caption("Upload PDF files and receive a structured review with progress tracking.")
 
-uploaded = st.file_uploader("Upload PDF", type=["pdf"])
-mode = st.selectbox("Processing mode", ["parallel", "sequential"], index=0)
+with st.sidebar:
+	st.subheader("Settings")
+	st.code(API_BASE, language="text")
+	mode = st.selectbox("Processing mode", ["parallel", "sequential"], index=0)
+	poll_interval = st.slider("Poll interval (seconds)", min_value=1, max_value=5, value=2)
+	auto_refresh = st.checkbox("Auto-refresh while running", value=True)
 
 if "job_id" not in st.session_state:
 	st.session_state.job_id = None
+if "last_result" not in st.session_state:
+	st.session_state.last_result = None
 
-if uploaded is not None and st.button("Start Analysis", type="primary"):
-	if uploaded.size > 50 * 1024 * 1024:
-		st.error("File too large. Max 50MB.")
+left, right = st.columns([2, 1])
+
+with left:
+	uploaded = st.file_uploader("Upload PDF", type=["pdf"])
+	start_clicked = st.button("Start Analysis", type="primary", use_container_width=True)
+
+if start_clicked:
+	if uploaded is None:
+		st.error("Please select a PDF file first.")
+	elif uploaded.size > 50 * 1024 * 1024:
+		st.error("File too large. Maximum size is 50MB.")
 	else:
-		payload = _post_file(f"/ingest?mode={mode}", uploaded.getvalue(), uploaded.name)
-		if payload.get("cached"):
-			st.success("Cached result returned instantly.")
-			st.json(payload.get("result", {}))
-		elif payload.get("job_id"):
-			st.session_state.job_id = payload["job_id"]
-			st.success(f"Job started: {payload['job_id']}")
-		else:
+		ok, payload = _post_file(f"/ingest?mode={mode}", uploaded.getvalue(), uploaded.name)
+		if not ok:
 			st.error(f"Upload failed: {payload}")
+		elif payload.get("cached"):
+			st.success("Cached result returned instantly.")
+			st.session_state.job_id = None
+			st.session_state.last_result = payload.get("result", {})
+		else:
+			st.session_state.job_id = payload.get("job_id")
+			st.session_state.last_result = None
+			st.success(f"Job started: {st.session_state.job_id}")
 
 if st.session_state.job_id:
-	job_id = st.session_state.job_id
 	st.subheader("Progress")
-	progress = st.progress(0)
-	status_box = st.empty()
 
-	for _ in range(240):
-		status = _get(f"/status/{job_id}")
-		progress.progress(int(status.get("progress_pct", 0)))
-		status_box.write(status)
-		if status.get("status") in {"done", "error"}:
-			break
-		time.sleep(1)
-
-	result = _get(f"/result/{job_id}")
-	st.subheader("Result")
-	if result.get("error") == "Not ready":
-		st.warning("Result not ready yet. Keep polling status.")
+	ok, status_payload = _get(f"/status/{st.session_state.job_id}")
+	if not ok:
+		st.error(f"Could not fetch status: {status_payload}")
 	else:
-		st.markdown("### Abstract")
-		st.write(result.get("abstract", ""))
+		pct = int(status_payload.get("progress_pct", 0))
+		st.progress(max(0, min(100, pct)))
 
-		st.markdown("### Top Key Points")
-		for point in result.get("top_key_points", []):
-			st.write(f"- {point}")
+		s1, s2, s3 = st.columns(3)
+		s1.metric("Status", str(status_payload.get("status", "unknown")).upper())
+		s2.metric("Done", int(status_payload.get("done_chunks", 0)))
+		s3.metric("Total", int(status_payload.get("total_chunks", 0)))
 
-		docs = result.get("documentation", {})
-		st.markdown("### Documentation")
-		for section in ["introduction", "methods", "findings", "conclusion"]:
-			with st.expander(section.capitalize(), expanded=(section == "introduction")):
-				st.write(docs.get(section, ""))
+		if status_payload.get("status") == "done":
+			ok, result_payload = _get(f"/result/{st.session_state.job_id}")
+			if ok and result_payload.get("error") != "Not ready":
+				st.session_state.last_result = result_payload
+				st.session_state.job_id = None
+			else:
+				st.warning("Job finished but result not ready yet. Click refresh.")
+		elif status_payload.get("status") == "error":
+			st.error("Processing failed. Try uploading again.")
+			st.session_state.job_id = None
+		elif auto_refresh:
+			time.sleep(poll_interval)
+			st.rerun()
 
-st.subheader("Quota")
-try:
-	st.json(_get("/quota"))
-except Exception as exc:
-	st.info(f"Quota unavailable: {exc}")
+if st.session_state.last_result:
+	_render_result(st.session_state.last_result)
+
+with right:
+	st.subheader("Quota")
+	ok, quota_payload = _get("/quota")
+	if ok:
+		st.metric("Used", int(quota_payload.get("uploads_used", 0)))
+		st.metric("Remaining", int(quota_payload.get("uploads_remaining", 0)))
+		st.metric("Reset (minutes)", int(quota_payload.get("resets_in_minutes", 0)))
+	else:
+		st.info(f"Quota unavailable: {quota_payload}")
+
+	if st.button("Refresh Status", use_container_width=True):
+		st.rerun()
