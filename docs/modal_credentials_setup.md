@@ -50,6 +50,16 @@ modal secret create pdf-pipeline-secrets \
 modal deploy modal/worker.py
 ```
 
+The worker app/function names used by the API are:
+
+- `MODAL_WORKER_APP=pdf-pipeline-worker`
+- `MODAL_WORKER_FUNCTION=process_chunk_remote`
+
+To enable remote execution in the API process, set:
+
+- `USE_MODAL_REMOTE=1`
+- `MODAL_LOCAL_FALLBACK=1` (recommended for resilience)
+
 ## 6) Quick checklist
 
 - `MODAL_TOKEN_ID` is set
@@ -57,4 +67,5 @@ modal deploy modal/worker.py
 - `MODAL_VLLM_URL` is set
 - `REDIS_URL` is set
 - `ALLOW_FAKE_REDIS=1` for local fallback testing
+- `USE_MODAL_REMOTE=1` when testing cloud worker path
 

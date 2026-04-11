@@ -23,7 +23,7 @@ from api.tracker import (
 	record_upload,
 )
 from Modal.aggregator import aggregate
-from Modal.worker import process_chunk_local
+from Modal.worker import process_chunk
 
 # Service layer for ingest/status/result/quota/stream routes.
 # This keeps API route handlers thin and focused on HTTP wiring.
@@ -138,14 +138,14 @@ async def _run_sequential(job_id: str, chunks: list[dict[str, Any]]) -> None:
 	"""Process chunks one-by-one (useful for easier debugging)."""
 	loop = asyncio.get_running_loop()
 	for chunk in chunks:
-		await loop.run_in_executor(_executor, process_chunk_local, job_id, chunk)
+		await loop.run_in_executor(_executor, process_chunk, job_id, chunk)
 
 
 async def _run_parallel(job_id: str, chunks: list[dict[str, Any]]) -> None:
 	"""Process all chunks concurrently using the shared thread pool."""
 	loop = asyncio.get_running_loop()
 	tasks = [
-		loop.run_in_executor(_executor, process_chunk_local, job_id, chunk)
+		loop.run_in_executor(_executor, process_chunk, job_id, chunk)
 		for chunk in chunks
 	]
 	await asyncio.gather(*tasks)
