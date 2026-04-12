@@ -5,6 +5,7 @@ It can be replaced later with Modal/Beam dispatch wrappers.
 """
 
 import os
+import threading
 from typing import Any
 
 import modal
@@ -24,6 +25,35 @@ USE_MODAL_REMOTE = _is_enabled(os.getenv("USE_MODAL_REMOTE"), default=False)
 MODAL_LOCAL_FALLBACK = _is_enabled(os.getenv("MODAL_LOCAL_FALLBACK"), default=True)
 MODAL_WORKER_APP = os.getenv("MODAL_WORKER_APP", "pdf-pipeline-worker")
 MODAL_WORKER_FUNCTION = os.getenv("MODAL_WORKER_FUNCTION", "process_chunk_remote")
+
+_metrics_lock = threading.Lock()
+_worker_metrics: dict[str, int] = {
+	"remote_success": 0,
+	"remote_failure": 0,
+	"fallback_used": 0,
+	"local_success": 0,
+}
+
+
+def _incr_metric(name: str) -> None:
+	with _metrics_lock:
+		_worker_metrics[name] = _worker_metrics.get(name, 0) + 1
+
+
+def get_worker_runtime_stats() -> dict[str, Any]:
+	"""Return runtime worker mode and counters for observability."""
+	with _metrics_lock:
+		counts = dict(_worker_metrics)
+
+	return {
+		"mode": {
+			"use_modal_remote": USE_MODAL_REMOTE,
+			"modal_local_fallback": MODAL_LOCAL_FALLBACK,
+			"modal_worker_app": MODAL_WORKER_APP,
+			"modal_worker_function": MODAL_WORKER_FUNCTION,
+		},
+		"counters": counts,
+	}
 
 
 def _summarize_text(text: str) -> tuple[str, list[str], int]:
@@ -76,6 +106,7 @@ def process_chunk_local(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 	# This writes one per-chunk result and increments done_chunks in Redis.
 	result = _build_result(chunk)
 	push_result(job_id, result)
+	_incr_metric("local_success")
 	return result
 
 
@@ -93,10 +124,14 @@ def process_chunk(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 	"""Process one chunk via Modal remote worker, or local fallback."""
 	if USE_MODAL_REMOTE:
 		try:
-			return _call_modal_remote(job_id, chunk)
+			result = _call_modal_remote(job_id, chunk)
+			_incr_metric("remote_success")
+			return result
 		except Exception:
+			_incr_metric("remote_failure")
 			if not MODAL_LOCAL_FALLBACK:
 				raise
+			_incr_metric("fallback_used")
 
 	return process_chunk_local(job_id, chunk)
 

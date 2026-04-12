@@ -77,6 +77,45 @@ class IngestServiceFlowTests(unittest.TestCase):
 		self.assertEqual(response.status_code, 200)
 		self.assertEqual(response.json()["abstract"], "final")
 
+	def test_observability_endpoint_shape(self) -> None:
+		response = self.client.get("/observability")
+		self.assertEqual(response.status_code, 200)
+		payload = response.json()
+		self.assertIn("service", payload)
+		self.assertIn("worker", payload)
+		self.assertIn("counters", payload["service"])
+		self.assertIn("mode", payload["worker"])
+
+	def test_result_markdown_endpoint_returns_report(self) -> None:
+		with patch(
+			"api.services.ingest_service.get_job",
+			return_value={
+				"status": "done",
+				"done_chunks": 2,
+				"total_chunks": 2,
+				"final_output": json.dumps(
+					{
+						"abstract": "A short abstract.",
+						"top_key_points": ["Point A"],
+						"documentation": {
+							"introduction": "Intro",
+							"methods": "Methods",
+							"findings": "Findings",
+							"conclusion": "Conclusion",
+						},
+						"total_chunks": 2,
+						"failed_chunks": 0,
+					}
+				),
+			},
+		):
+			response = self.client.get("/result/job-5/markdown")
+
+		self.assertEqual(response.status_code, 200)
+		self.assertIn("text/markdown", response.headers.get("content-type", ""))
+		self.assertIn("# PDF Review Report", response.text)
+		self.assertIn("## Abstract", response.text)
+
 
 if __name__ == "__main__":
 	unittest.main()

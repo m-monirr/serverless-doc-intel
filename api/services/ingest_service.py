@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
@@ -22,8 +24,8 @@ from api.tracker import (
 	init_job,
 	record_upload,
 )
-from Modal.aggregator import aggregate
-from Modal.worker import process_chunk
+from Modal.aggregator import aggregate, render_markdown_report
+from Modal.worker import get_worker_runtime_stats, process_chunk
 
 # Service layer for ingest/status/result/quota/stream routes.
 # This keeps API route handlers thin and focused on HTTP wiring.
@@ -35,6 +37,59 @@ WATCH_TIMEOUT_SECONDS = 300
 WATCH_POLL_SECONDS = 2
 STREAM_TIMEOUT_SECONDS = 300.0
 STREAM_POLL_SECONDS = 0.5
+
+_metrics_lock = threading.Lock()
+_job_started_at: dict[str, float] = {}
+_service_metrics: dict[str, float | int] = {
+	"jobs_started": 0,
+	"jobs_completed": 0,
+	"jobs_failed": 0,
+	"jobs_timed_out": 0,
+	"aggregate_failures": 0,
+	"last_job_duration_seconds": 0.0,
+}
+
+
+def _incr_metric(name: str) -> None:
+	with _metrics_lock:
+		_service_metrics[name] = int(_service_metrics.get(name, 0)) + 1
+
+
+def _mark_job_started(job_id: str) -> None:
+	with _metrics_lock:
+		_job_started_at[job_id] = time.time()
+		_service_metrics["jobs_started"] = int(_service_metrics.get("jobs_started", 0)) + 1
+
+
+def _mark_job_finished(job_id: str, success: bool) -> None:
+	with _metrics_lock:
+		started_at = _job_started_at.pop(job_id, None)
+		if started_at is not None:
+			_service_metrics["last_job_duration_seconds"] = round(
+				time.time() - started_at,
+				3,
+			)
+		if success:
+			_service_metrics["jobs_completed"] = int(
+				_service_metrics.get("jobs_completed", 0)
+			) + 1
+		else:
+			_service_metrics["jobs_failed"] = int(_service_metrics.get("jobs_failed", 0)) + 1
+
+
+def get_runtime_observability() -> dict[str, Any]:
+	"""Return service and worker runtime counters for troubleshooting."""
+	with _metrics_lock:
+		service_counts = dict(_service_metrics)
+		in_progress_jobs = len(_job_started_at)
+
+	return {
+		"service": {
+			"counters": service_counts,
+			"in_progress_jobs": in_progress_jobs,
+		},
+		"worker": get_worker_runtime_stats(),
+	}
 
 
 def _client_ip(request: Request) -> str:
@@ -125,12 +180,22 @@ async def _watch_and_aggregate(job_id: str, total_chunks: int) -> None:
 		waited += WATCH_POLL_SECONDS
 		job = get_job(job_id)
 		if not job:
+			_mark_job_finished(job_id, success=False)
 			return
 		if job["done_chunks"] >= total_chunks:
-			await loop.run_in_executor(_executor, aggregate, job_id)
+			try:
+				await loop.run_in_executor(_executor, aggregate, job_id)
+				_mark_job_finished(job_id, success=True)
+			except Exception:
+				_incr_metric("aggregate_failures")
+				_mark_job_finished(job_id, success=False)
+				logger.exception("Aggregation failed for job %s", job_id)
+				get_redis().hset(job_id, "status", "error")
 			return
 
 	logger.error("Timed out waiting for chunk completion for job %s", job_id)
+	_incr_metric("jobs_timed_out")
+	_mark_job_finished(job_id, success=False)
 	get_redis().hset(job_id, "status", "error")
 
 
@@ -197,6 +262,7 @@ async def ingest_pdf(
 
 	record_upload(user_ip)
 	init_job(job_id, len(chunks), file_md5=file_md5)
+	_mark_job_started(job_id)
 	_dispatch_chunk_tasks(background_tasks, mode, job_id, chunks)
 	background_tasks.add_task(_watch_and_aggregate, job_id, len(chunks))
 
@@ -230,6 +296,19 @@ def get_result(job_id: str) -> dict[str, Any]:
 		}
 
 	return json.loads(job.get("final_output", "{}"))
+
+
+def get_result_markdown(job_id: str) -> str:
+	"""Return markdown report for a completed job result."""
+	job = get_job(job_id)
+	if not job:
+		raise HTTPException(status_code=404, detail="Job not found")
+
+	if job["status"] != "done":
+		raise HTTPException(status_code=409, detail="Result not ready")
+
+	output = json.loads(job.get("final_output", "{}"))
+	return render_markdown_report(output, job_id=job_id)
 
 
 def get_quota(request: Request) -> dict[str, int]:

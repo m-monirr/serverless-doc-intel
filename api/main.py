@@ -1,11 +1,13 @@
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from api.services.ingest_service import (
 	get_quota,
 	get_result,
+	get_result_markdown,
+	get_runtime_observability,
 	get_status,
 	ingest_pdf,
 	stream_events,
@@ -39,9 +41,21 @@ def result(job_id: str) -> dict[str, Any]:
 	return get_result(job_id)
 
 
+@app.get("/result/{job_id}/markdown")
+def result_markdown(job_id: str) -> Response:
+	markdown = get_result_markdown(job_id)
+	headers = {"Content-Disposition": f'attachment; filename="report-{job_id}.md"'}
+	return Response(content=markdown, media_type="text/markdown", headers=headers)
+
+
 @app.get("/quota")
 def quota(request: Request) -> dict[str, int]:
 	return get_quota(request)
+
+
+@app.get("/observability")
+def observability() -> dict[str, Any]:
+	return get_runtime_observability()
 
 
 @app.get("/stream/{job_id}")

@@ -5,6 +5,65 @@ from typing import Any
 from api.tracker import cache_result_by_md5, get_job, set_final_output
 
 
+def render_markdown_report(final_output: dict[str, Any], job_id: str | None = None) -> str:
+	"""Render final JSON output into a human-friendly markdown report."""
+	heading = "# PDF Review Report"
+	if job_id:
+		heading += f"\n\nJob ID: {job_id}"
+
+	abstract = str(final_output.get("abstract", "")).strip() or "No abstract available."
+	points = final_output.get("top_key_points", [])
+	if not isinstance(points, list):
+		points = []
+
+	docs = final_output.get("documentation", {})
+	if not isinstance(docs, dict):
+		docs = {}
+
+	lines: list[str] = [
+		heading,
+		"",
+		"## Abstract",
+		"",
+		abstract,
+		"",
+		"## Top Key Points",
+		"",
+	]
+
+	if points:
+		for point in points:
+			lines.append(f"- {point}")
+	else:
+		lines.append("- No key points available.")
+
+	lines.extend(
+		[
+			"",
+			"## Documentation",
+			"",
+			"### Introduction",
+			str(docs.get("introduction", "")),
+			"",
+			"### Methods",
+			str(docs.get("methods", "")),
+			"",
+			"### Findings",
+			str(docs.get("findings", "")),
+			"",
+			"### Conclusion",
+			str(docs.get("conclusion", "")),
+			"",
+			"## Metrics",
+			"",
+			f"- Total chunks: {int(final_output.get('total_chunks', 0))}",
+			f"- Failed chunks: {int(final_output.get('failed_chunks', 0))}",
+		]
+	)
+
+	return "\n".join(lines) + "\n"
+
+
 def aggregate(job_id: str) -> dict[str, Any]:
 	"""Build final output from chunk-level results and persist it."""
 	# 1) Read all chunk outputs from tracker storage.

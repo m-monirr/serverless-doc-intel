@@ -9,6 +9,60 @@ import requests
 import streamlit as st
 
 
+def _result_to_markdown(result: dict[str, Any]) -> str:
+	abstract = str(result.get("abstract", "")).strip() or "No abstract available."
+	points = result.get("top_key_points", [])
+	if not isinstance(points, list):
+		points = []
+
+	docs = result.get("documentation", {})
+	if not isinstance(docs, dict):
+		docs = {}
+
+	lines: list[str] = [
+		"# PDF Review Report",
+		"",
+		"## Abstract",
+		"",
+		abstract,
+		"",
+		"## Top Key Points",
+		"",
+	]
+
+	if points:
+		for point in points:
+			lines.append(f"- {point}")
+	else:
+		lines.append("- No key points available.")
+
+	lines.extend(
+		[
+			"",
+			"## Documentation",
+			"",
+			"### Introduction",
+			str(docs.get("introduction", "")),
+			"",
+			"### Methods",
+			str(docs.get("methods", "")),
+			"",
+			"### Findings",
+			str(docs.get("findings", "")),
+			"",
+			"### Conclusion",
+			str(docs.get("conclusion", "")),
+			"",
+			"## Metrics",
+			"",
+			f"- Total chunks: {int(result.get('total_chunks', 0))}",
+			f"- Failed chunks: {int(result.get('failed_chunks', 0))}",
+		]
+	)
+
+	return "\n".join(lines) + "\n"
+
+
 def _resolve_api_base() -> str:
 	try:
 		if "api_base" in st.secrets:
@@ -145,6 +199,13 @@ if st.session_state.job_id:
 
 if st.session_state.last_result:
 	_render_result(st.session_state.last_result)
+	st.download_button(
+		label="Download Report (.md)",
+		data=_result_to_markdown(st.session_state.last_result),
+		file_name="pdf-review-report.md",
+		mime="text/markdown",
+		use_container_width=True,
+	)
 
 with right:
 	st.subheader("Quota")
