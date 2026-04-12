@@ -10,6 +10,13 @@ from typing import Any
 
 import modal
 
+from Modal.llm_client import (
+	ALLOW_LLM_FALLBACK,
+	USE_LLM_ANALYSIS,
+	call_vllm_prompt,
+	llm_mode_status,
+	parse_json_object,
+)
 from api.tracker import push_result
 
 app = modal.App("pdf-pipeline-worker")
@@ -32,6 +39,8 @@ _worker_metrics: dict[str, int] = {
 	"remote_failure": 0,
 	"fallback_used": 0,
 	"local_success": 0,
+	"llm_chunk_success": 0,
+	"llm_chunk_failure": 0,
 }
 
 
@@ -51,6 +60,7 @@ def get_worker_runtime_stats() -> dict[str, Any]:
 			"modal_local_fallback": MODAL_LOCAL_FALLBACK,
 			"modal_worker_app": MODAL_WORKER_APP,
 			"modal_worker_function": MODAL_WORKER_FUNCTION,
+			**llm_mode_status(),
 		},
 		"counters": counts,
 	}
@@ -91,6 +101,33 @@ def _build_result(chunk: dict[str, Any]) -> dict[str, Any]:
 	"""Create normalized chunk output payload from raw chunk text."""
 	chunk_id = int(chunk["chunk_id"])
 	text = str(chunk.get("text", ""))
+
+	if USE_LLM_ANALYSIS:
+		prompt = (
+			"Analyze this document chunk and return ONLY valid JSON with keys: "
+			"summary (string), key_points (array of strings), importance_score (integer 1-5).\n\n"
+			f"chunk_id: {chunk_id}\n"
+			f"chunk_text:\n{text[:9000]}"
+		)
+		try:
+			llm_text = call_vllm_prompt(prompt, max_tokens=500, temperature=0.1)
+			obj = parse_json_object(llm_text)
+			summary = str(obj.get("summary", "")).strip() or "No summary generated."
+			points_raw = obj.get("key_points", [])
+			points = [str(x).strip() for x in points_raw if str(x).strip()][:8]
+			score = int(obj.get("importance_score", 3))
+			score = max(1, min(5, score))
+			_incr_metric("llm_chunk_success")
+			return {
+				"chunk_id": chunk_id,
+				"summary": summary,
+				"key_points": points,
+				"importance_score": score,
+			}
+		except Exception:
+			_incr_metric("llm_chunk_failure")
+			if not ALLOW_LLM_FALLBACK:
+				raise
 
 	summary, points, score = _summarize_text(text)
 	return {

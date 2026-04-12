@@ -1,7 +1,10 @@
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
+
+load_dotenv()
 
 from api.services.ingest_service import (
 	get_quota,

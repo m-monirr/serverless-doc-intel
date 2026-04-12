@@ -239,7 +239,12 @@ async def ingest_pdf(
 		content = await file.read()
 		_validate_pdf_bytes(content)
 		temp_path = _write_temp_pdf(job_id, content)
-		file_md5, cached, chunks = _load_chunks_with_dedup(temp_path)
+		loop = asyncio.get_running_loop()
+		file_md5, cached, chunks = await loop.run_in_executor(
+			_executor,
+			_load_chunks_with_dedup,
+			temp_path,
+		)
 		if cached is not None:
 			return JSONResponse(
 				{

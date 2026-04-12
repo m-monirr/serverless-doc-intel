@@ -1,7 +1,14 @@
 """Final aggregation pass."""
 
+import json
 from typing import Any
 
+from Modal.llm_client import (
+	ALLOW_LLM_FALLBACK,
+	USE_LLM_ANALYSIS,
+	call_vllm_prompt,
+	parse_json_object,
+)
 from api.tracker import cache_result_by_md5, get_job, set_final_output
 
 
@@ -99,22 +106,65 @@ def aggregate(job_id: str) -> dict[str, Any]:
 	if not all_points:
 		all_points = [r.get("summary", "") for r in results if r.get("summary")]
 
-	abstract = " ".join(r.get("summary", "") for r in results[:4]).strip()
-	abstract = abstract[:1200] if abstract else "Document processed successfully."
+	def _fallback_final() -> dict[str, Any]:
+		abstract = " ".join(r.get("summary", "") for r in results[:4]).strip()
+		abstract_local = abstract[:1200] if abstract else "Document processed successfully."
+		return {
+			"abstract": abstract_local,
+			"top_key_points": all_points[:10],
+			"documentation": {
+				"introduction": results[0].get("summary", "") if results else "",
+				"methods": results[len(results) // 3].get("summary", "") if results else "",
+				"findings": results[(2 * len(results)) // 3].get("summary", "") if results else "",
+				"conclusion": results[-1].get("summary", "") if results else "",
+			},
+			"total_chunks": job["total_chunks"],
+			"failed_chunks": max(0, job["total_chunks"] - len(results)),
+		}
 
-	# 3) Build final shape expected by API consumers/front-end.
-	final = {
-		"abstract": abstract,
-		"top_key_points": all_points[:10],
-		"documentation": {
-			"introduction": results[0].get("summary", "") if results else "",
-			"methods": results[len(results) // 3].get("summary", "") if results else "",
-			"findings": results[(2 * len(results)) // 3].get("summary", "") if results else "",
-			"conclusion": results[-1].get("summary", "") if results else "",
-		},
-		"total_chunks": job["total_chunks"],
-		"failed_chunks": max(0, job["total_chunks"] - len(results)),
-	}
+	if USE_LLM_ANALYSIS:
+		try:
+			payload = {
+				"chunk_count": len(results),
+				"chunks": [
+					{
+						"chunk_id": int(r.get("chunk_id", 0)),
+						"summary": str(r.get("summary", "")),
+						"key_points": r.get("key_points", []),
+						"importance_score": int(r.get("importance_score", 3)),
+					}
+					for r in results
+				],
+			}
+			prompt = (
+				"Create one final integrated review from the JSON chunk analyses below. "
+				"Return ONLY valid JSON with keys: abstract (string), top_key_points (array of strings), "
+				"documentation (object with introduction, methods, findings, conclusion strings).\n\n"
+				f"chunk_analyses_json:\n{json.dumps(payload)}"
+			)
+			llm_text = call_vllm_prompt(prompt, max_tokens=900, temperature=0.1)
+			obj = parse_json_object(llm_text)
+			doc = obj.get("documentation", {})
+			if not isinstance(doc, dict):
+				doc = {}
+			final = {
+				"abstract": str(obj.get("abstract", "")).strip() or "Document processed successfully.",
+				"top_key_points": [str(x).strip() for x in obj.get("top_key_points", []) if str(x).strip()][:10],
+				"documentation": {
+					"introduction": str(doc.get("introduction", "")),
+					"methods": str(doc.get("methods", "")),
+					"findings": str(doc.get("findings", "")),
+					"conclusion": str(doc.get("conclusion", "")),
+				},
+				"total_chunks": job["total_chunks"],
+				"failed_chunks": max(0, job["total_chunks"] - len(results)),
+			}
+		except Exception:
+			if not ALLOW_LLM_FALLBACK:
+				raise
+			final = _fallback_final()
+	else:
+		final = _fallback_final()
 
 	set_final_output(job_id, final)
 	file_md5 = job.get("file_md5")

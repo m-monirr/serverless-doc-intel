@@ -96,7 +96,7 @@ def _get(path: str, timeout: int = 30) -> tuple[bool, dict[str, Any]]:
 def _post_file(path: str, file_bytes: bytes, file_name: str) -> tuple[bool, dict[str, Any]]:
 	files = {"file": (file_name, file_bytes, "application/pdf")}
 	try:
-		response = requests.post(f"{API_BASE}{path}", files=files, timeout=600)
+		response = requests.post(f"{API_BASE}{path}", files=files, timeout=1200)
 		payload = _parse_json(response)
 		if response.status_code >= 400:
 			return False, {"status_code": response.status_code, "payload": payload}
@@ -156,9 +156,12 @@ if start_clicked:
 	elif uploaded.size > 50 * 1024 * 1024:
 		st.error("File too large. Maximum size is 50MB.")
 	else:
-		ok, payload = _post_file(f"/ingest?mode={mode}", uploaded.getvalue(), uploaded.name)
+		with st.spinner("Analyzing file... this can take up to 1-2 minutes for OCR PDFs."):
+			ok, payload = _post_file(f"/ingest?mode={mode}", uploaded.getvalue(), uploaded.name)
 		if not ok:
-			st.error(f"Upload failed: {payload}")
+			status_code = payload.get("status_code")
+			details = payload.get("payload", payload)
+			st.error(f"Upload failed ({status_code}): {details}")
 		elif payload.get("cached"):
 			st.success("Cached result returned instantly.")
 			st.session_state.job_id = None
