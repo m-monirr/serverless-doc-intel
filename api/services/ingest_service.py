@@ -251,6 +251,7 @@ async def ingest_pdf(
 					"job_id": None,
 					"cached": True,
 					"result": cached,
+					"markdown_report": render_markdown_report(cached),
 					"message": "Identical PDF processed before. Returning cached result instantly.",
 				}
 			)

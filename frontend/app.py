@@ -105,27 +105,14 @@ def _post_file(path: str, file_bytes: bytes, file_name: str) -> tuple[bool, dict
 		return False, {"error": str(exc)}
 
 
-def _render_result(result: dict[str, Any]) -> None:
-	st.subheader("Result")
-	st.markdown("### Abstract")
-	st.write(result.get("abstract", ""))
-
-	st.markdown("### Top Key Points")
-	points = result.get("top_key_points", [])
-	if not points:
-		st.info("No key points were returned.")
-	for point in points:
-		st.write(f"- {point}")
-
-	docs = result.get("documentation", {})
-	st.markdown("### Documentation")
-	for section in ["introduction", "methods", "findings", "conclusion"]:
-		with st.expander(section.capitalize(), expanded=(section == "introduction")):
-			st.write(docs.get(section, ""))
-
-	meta_col1, meta_col2 = st.columns(2)
-	meta_col1.metric("Total Chunks", int(result.get("total_chunks", 0)))
-	meta_col2.metric("Failed Chunks", int(result.get("failed_chunks", 0)))
+def _get_text(path: str, timeout: int = 60) -> tuple[bool, str | dict[str, Any]]:
+	try:
+		response = requests.get(f"{API_BASE}{path}", timeout=timeout)
+		if response.status_code >= 400:
+			return False, {"status_code": response.status_code, "payload": _parse_json(response)}
+		return True, response.text
+	except requests.RequestException as exc:
+		return False, {"error": str(exc)}
 
 
 st.set_page_config(page_title="Async PDF Intelligence", page_icon="PDF", layout="wide")
@@ -141,8 +128,8 @@ with st.sidebar:
 
 if "job_id" not in st.session_state:
 	st.session_state.job_id = None
-if "last_result" not in st.session_state:
-	st.session_state.last_result = None
+if "report_markdown" not in st.session_state:
+	st.session_state.report_markdown = None
 
 left, right = st.columns([2, 1])
 
@@ -163,12 +150,14 @@ if start_clicked:
 			details = payload.get("payload", payload)
 			st.error(f"Upload failed ({status_code}): {details}")
 		elif payload.get("cached"):
-			st.success("Cached result returned instantly.")
+			st.success("Cached report returned instantly.")
 			st.session_state.job_id = None
-			st.session_state.last_result = payload.get("result", {})
+			st.session_state.report_markdown = payload.get("markdown_report")
+			if not st.session_state.report_markdown:
+				st.session_state.report_markdown = _result_to_markdown(payload.get("result", {}))
 		else:
 			st.session_state.job_id = payload.get("job_id")
-			st.session_state.last_result = None
+			st.session_state.report_markdown = None
 			st.success(f"Job started: {st.session_state.job_id}")
 
 if st.session_state.job_id:
@@ -187,12 +176,12 @@ if st.session_state.job_id:
 		s3.metric("Total", int(status_payload.get("total_chunks", 0)))
 
 		if status_payload.get("status") == "done":
-			ok, result_payload = _get(f"/result/{st.session_state.job_id}")
-			if ok and result_payload.get("error") != "Not ready":
-				st.session_state.last_result = result_payload
+			ok, markdown_payload = _get_text(f"/result/{st.session_state.job_id}/markdown")
+			if ok and isinstance(markdown_payload, str):
+				st.session_state.report_markdown = markdown_payload
 				st.session_state.job_id = None
 			else:
-				st.warning("Job finished but result not ready yet. Click refresh.")
+				st.warning("Job finished but markdown report is not ready yet. Click refresh.")
 		elif status_payload.get("status") == "error":
 			st.error("Processing failed. Try uploading again.")
 			st.session_state.job_id = None
@@ -200,11 +189,11 @@ if st.session_state.job_id:
 			time.sleep(poll_interval)
 			st.rerun()
 
-if st.session_state.last_result:
-	_render_result(st.session_state.last_result)
+if st.session_state.report_markdown:
+	st.success("Analysis complete. Download your markdown report.")
 	st.download_button(
 		label="Download Report (.md)",
-		data=_result_to_markdown(st.session_state.last_result),
+		data=st.session_state.report_markdown,
 		file_name="pdf-review-report.md",
 		mime="text/markdown",
 		use_container_width=True,
