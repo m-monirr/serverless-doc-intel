@@ -13,6 +13,7 @@ from fastapi import BackgroundTasks, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from api.chunker import extract_and_chunk
+from api.retrieval import select_representative_chunk_ids
 from api.tracker import (
 	RATE_LIMIT_UPLOADS,
 	calculate_file_md5,
@@ -37,6 +38,7 @@ WATCH_TIMEOUT_SECONDS = 300
 WATCH_POLL_SECONDS = 2
 STREAM_TIMEOUT_SECONDS = 300.0
 STREAM_POLL_SECONDS = 0.5
+RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "8"))
 
 _metrics_lock = threading.Lock()
 _job_started_at: dict[str, float] = {}
@@ -266,8 +268,11 @@ async def ingest_pdf(
 	if chunks is None:
 		raise HTTPException(status_code=500, detail="Chunk extraction failed unexpectedly.")
 
+	selected_chunk_ids = select_representative_chunk_ids(chunks, top_k=RETRIEVAL_TOP_K)
+
 	record_upload(user_ip)
 	init_job(job_id, len(chunks), file_md5=file_md5)
+	get_redis().hset(job_id, "selected_chunk_ids", json.dumps(selected_chunk_ids))
 	_mark_job_started(job_id)
 	_dispatch_chunk_tasks(background_tasks, mode, job_id, chunks)
 	background_tasks.add_task(_watch_and_aggregate, job_id, len(chunks))

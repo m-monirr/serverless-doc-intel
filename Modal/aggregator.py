@@ -79,6 +79,15 @@ def aggregate(job_id: str) -> dict[str, Any]:
 		raise ValueError(f"Job {job_id} not found")
 
 	results = sorted(job.get("results", []), key=lambda item: int(item["chunk_id"]))
+	selected_chunk_ids: set[int] = set()
+	raw_selected = job.get("selected_chunk_ids", "")
+	if isinstance(raw_selected, str) and raw_selected:
+		try:
+			parsed = json.loads(raw_selected)
+			if isinstance(parsed, list):
+				selected_chunk_ids = {int(x) for x in parsed}
+		except Exception:
+			selected_chunk_ids = set()
 	if not results:
 		# Handle empty extraction case gracefully.
 		final = {
@@ -124,8 +133,15 @@ def aggregate(job_id: str) -> dict[str, Any]:
 
 	if USE_LLM_ANALYSIS:
 		try:
+			llm_source_results = results
+			if selected_chunk_ids:
+				filtered = [r for r in results if int(r.get("chunk_id", -1)) in selected_chunk_ids]
+				if filtered:
+					llm_source_results = filtered
+
 			payload = {
-				"chunk_count": len(results),
+				"chunk_count": len(llm_source_results),
+				"selected_chunk_ids": sorted(selected_chunk_ids),
 				"chunks": [
 					{
 						"chunk_id": int(r.get("chunk_id", 0)),
@@ -133,7 +149,7 @@ def aggregate(job_id: str) -> dict[str, Any]:
 						"key_points": r.get("key_points", []),
 						"importance_score": int(r.get("importance_score", 3)),
 					}
-					for r in results
+					for r in llm_source_results
 				],
 			}
 			prompt = (
