@@ -5,6 +5,8 @@ from typing import Any
 
 import numpy as np
 
+from Modal.llm_client import USE_REAL_EMBEDDINGS, get_text_embeddings
+
 
 def _tokenize(text: str) -> list[str]:
 	return [tok for tok in text.lower().split() if tok]
@@ -47,11 +49,25 @@ def select_representative_chunk_ids(
 
 	embeddings: list[np.ndarray] = []
 	chunk_ids: list[int] = []
+	chunk_texts: list[str] = []
 	for chunk in chunks:
-		chunk_id = int(chunk.get("chunk_id", 0))
-		text = str(chunk.get("text", ""))
-		embeddings.append(embed_text(text, dim=dim))
-		chunk_ids.append(chunk_id)
+		chunk_ids.append(int(chunk.get("chunk_id", 0)))
+		chunk_texts.append(str(chunk.get("text", "")))
+
+	if USE_REAL_EMBEDDINGS:
+		try:
+			remote_vecs = get_text_embeddings(chunk_texts)
+			for vec in remote_vecs:
+				np_vec = np.array(vec, dtype=float)
+				norm = np.linalg.norm(np_vec)
+				if norm > 0:
+					np_vec = np_vec / norm
+				embeddings.append(np_vec)
+		except Exception:
+			# Safe fallback keeps pipeline available if embedding endpoint is down.
+			embeddings = [embed_text(text, dim=dim) for text in chunk_texts]
+	else:
+		embeddings = [embed_text(text, dim=dim) for text in chunk_texts]
 
 	mat = np.vstack(embeddings)
 	centroid = mat.mean(axis=0)

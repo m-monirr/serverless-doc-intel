@@ -20,6 +20,27 @@ MODAL_VLLM_MODEL = os.getenv("MODAL_VLLM_MODEL", "Qwen2.5-7B-Instruct")
 MODAL_VLLM_API_KEY = os.getenv("MODAL_VLLM_API_KEY", "").strip()
 VLLM_TIMEOUT_SECONDS = int(os.getenv("VLLM_TIMEOUT_SECONDS", "90"))
 
+USE_REAL_EMBEDDINGS = _is_enabled(os.getenv("USE_REAL_EMBEDDINGS"), default=False)
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+EMBEDDING_API_URL = os.getenv("EMBEDDING_API_URL", "").strip()
+
+
+def _resolve_chat_url() -> str:
+	if os.getenv("MODAL_VLLM_CHAT_URL", "").strip():
+		return os.getenv("MODAL_VLLM_CHAT_URL", "").strip()
+	return MODAL_VLLM_URL
+
+
+def _resolve_embedding_url() -> str:
+	if EMBEDDING_API_URL:
+		return EMBEDDING_API_URL
+	chat_url = _resolve_chat_url()
+	if "/v1/chat/completions" in chat_url:
+		return chat_url.replace("/v1/chat/completions", "/v1/embeddings")
+	if chat_url.endswith("/"):
+		return chat_url + "v1/embeddings"
+	return chat_url + "/v1/embeddings"
+
 
 def llm_mode_status() -> dict[str, Any]:
 	"""Expose current LLM execution mode and endpoint config."""
@@ -28,6 +49,9 @@ def llm_mode_status() -> dict[str, Any]:
 		"allow_llm_fallback": ALLOW_LLM_FALLBACK,
 		"vllm_url_configured": bool(MODAL_VLLM_URL),
 		"vllm_model": MODAL_VLLM_MODEL,
+		"use_real_embeddings": USE_REAL_EMBEDDINGS,
+		"embedding_model": EMBEDDING_MODEL,
+		"embedding_url_configured": bool(EMBEDDING_API_URL or MODAL_VLLM_URL),
 	}
 
 
@@ -57,14 +81,15 @@ def _extract_text_from_response(payload: Any) -> str:
 
 def call_vllm_prompt(prompt: str, *, max_tokens: int = 700, temperature: float = 0.2) -> str:
 	"""Call configured vLLM endpoint and return text output."""
-	if not MODAL_VLLM_URL:
+	chat_url = _resolve_chat_url()
+	if not chat_url:
 		raise RuntimeError("MODAL_VLLM_URL is not configured")
 
 	headers = {"Content-Type": "application/json"}
 	if MODAL_VLLM_API_KEY:
 		headers["Authorization"] = f"Bearer {MODAL_VLLM_API_KEY}"
 
-	if "/v1/chat/completions" in MODAL_VLLM_URL:
+	if "/v1/chat/completions" in chat_url:
 		body = {
 			"model": MODAL_VLLM_MODEL,
 			"messages": [
@@ -87,7 +112,7 @@ def call_vllm_prompt(prompt: str, *, max_tokens: int = 700, temperature: float =
 		}
 
 	resp = requests.post(
-		MODAL_VLLM_URL,
+		chat_url,
 		json=body,
 		headers=headers,
 		timeout=VLLM_TIMEOUT_SECONDS,
@@ -100,6 +125,42 @@ def call_vllm_prompt(prompt: str, *, max_tokens: int = 700, temperature: float =
 		return resp.text
 
 	return _extract_text_from_response(payload)
+
+
+def get_text_embeddings(texts: list[str]) -> list[list[float]]:
+	"""Fetch vector embeddings from a real embedding endpoint."""
+	if not texts:
+		return []
+
+	url = _resolve_embedding_url()
+	if not url:
+		raise RuntimeError("Embedding endpoint URL is not configured")
+
+	headers = {"Content-Type": "application/json"}
+	if MODAL_VLLM_API_KEY:
+		headers["Authorization"] = f"Bearer {MODAL_VLLM_API_KEY}"
+
+	body = {
+		"model": EMBEDDING_MODEL,
+		"input": texts,
+	}
+	resp = requests.post(url, json=body, headers=headers, timeout=VLLM_TIMEOUT_SECONDS)
+	resp.raise_for_status()
+	payload = resp.json()
+
+	data = payload.get("data")
+	if not isinstance(data, list):
+		raise RuntimeError("Embedding response missing data list")
+
+	vectors: list[list[float]] = []
+	for item in data:
+		if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
+			raise RuntimeError("Invalid embedding item in response")
+		vectors.append([float(x) for x in item["embedding"]])
+
+	if len(vectors) != len(texts):
+		raise RuntimeError("Embedding count mismatch")
+	return vectors
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
