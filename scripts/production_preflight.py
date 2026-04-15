@@ -51,7 +51,14 @@ def _check_env_mode() -> CheckResult:
 
 def _check_redis() -> CheckResult:
 	redis_url = os.getenv("REDIS_URL", "").strip()
+	allow_fake_redis = os.getenv("ALLOW_FAKE_REDIS", "1").strip() in {"1", "true", "yes", "on"}
 	if not redis_url:
+		if allow_fake_redis:
+			return CheckResult(
+				"redis",
+				"warn",
+				"REDIS_URL is empty but ALLOW_FAKE_REDIS=1, local fallback will be used.",
+			)
 		return CheckResult("redis", "fail", "REDIS_URL is empty.")
 
 	try:
@@ -59,10 +66,32 @@ def _check_redis() -> CheckResult:
 		client.ping()
 		return CheckResult("redis", "pass", "Redis ping succeeded.")
 	except Exception as exc:
+		if allow_fake_redis:
+			return CheckResult(
+				"redis",
+				"warn",
+				f"Redis ping failed but ALLOW_FAKE_REDIS=1, fallback is active: {exc}",
+			)
 		return CheckResult("redis", "fail", f"Redis ping failed: {exc}")
 
 
 def _check_vllm_chat() -> CheckResult:
+	mode = llm_mode_status()
+	if not mode.get("use_llm_analysis", False):
+		return CheckResult(
+			"vllm_chat",
+			"warn",
+			"USE_LLM_ANALYSIS is disabled, skipping live chat endpoint probe.",
+		)
+
+	vllm_url = os.getenv("MODAL_VLLM_CHAT_URL", "").strip() or os.getenv("MODAL_VLLM_URL", "").strip()
+	if any(token in vllm_url.lower() for token in ["placeholder", "your_endpoint", "example"]):
+		return CheckResult(
+			"vllm_chat",
+			"fail",
+			"vLLM URL appears to be a placeholder value; set a real deployed endpoint URL.",
+		)
+
 	try:
 		_ = call_vllm_prompt("Reply with exactly: ok", max_tokens=8, temperature=0)
 		return CheckResult("vllm_chat", "pass", "vLLM chat request succeeded.")
@@ -76,6 +105,14 @@ def _check_embeddings() -> CheckResult:
 			"embeddings",
 			"warn",
 			"USE_REAL_EMBEDDINGS is disabled. Retrieval uses local deterministic embeddings.",
+		)
+
+	embedding_url = os.getenv("EMBEDDING_API_URL", "").strip()
+	if any(token in embedding_url.lower() for token in ["placeholder", "your_endpoint", "example"]):
+		return CheckResult(
+			"embeddings",
+			"fail",
+			"Embedding URL appears to be a placeholder value; set a real /v1/embeddings endpoint.",
 		)
 
 	try:
