@@ -69,3 +69,30 @@ To enable remote execution in the API process, set:
 - `ALLOW_FAKE_REDIS=1` for local fallback testing
 - `USE_MODAL_REMOTE=1` when testing cloud worker path
 
+## 7) Activate real LLM + embeddings
+
+Set these in `.env`:
+
+- `USE_LLM_ANALYSIS=1`
+- `MODAL_VLLM_CHAT_URL=https://<your-endpoint>/v1/chat/completions`
+- `USE_REAL_EMBEDDINGS=1`
+- `EMBEDDING_API_URL=https://<your-endpoint>/v1/embeddings`
+- `EMBEDDING_MODEL=<embedding-model-name>`
+
+Then restart API/UI processes.
+
+## 8) Run production preflight
+
+Run this command from repo root:
+
+```powershell
+venv\Scripts\python.exe scripts/production_preflight.py
+```
+
+The command prints pass/warn/fail checks for:
+
+- LLM mode activation
+- Redis connectivity
+- vLLM chat endpoint reachability
+- Embedding endpoint reachability
+
