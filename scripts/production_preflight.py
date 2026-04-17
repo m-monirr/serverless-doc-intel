@@ -49,6 +49,43 @@ def _check_env_mode() -> CheckResult:
 	return CheckResult("llm_mode", "pass", "LLM mode is enabled with endpoint configured.")
 
 
+def _check_modal_credentials() -> CheckResult:
+	token_id = os.getenv("MODAL_TOKEN_ID", "").strip()
+	token_secret = os.getenv("MODAL_TOKEN_SECRET", "").strip()
+	use_modal_remote = os.getenv("USE_MODAL_REMOTE", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+	placeholder_tokens = {"", "your_modal_token_id", "your_modal_token_secret"}
+	id_is_placeholder = token_id.lower() in placeholder_tokens
+	secret_is_placeholder = token_secret.lower() in placeholder_tokens
+
+	# Catch committed credential-like values and force operator action.
+	id_looks_real = token_id.startswith("ak-")
+	secret_looks_real = token_secret.startswith("as-")
+
+	if id_looks_real or secret_looks_real:
+		return CheckResult(
+			"modal_credentials",
+			"fail",
+			"Modal credentials look like real tokens in .env. Move to secure secrets store and rotate tokens.",
+		)
+
+	if use_modal_remote and (id_is_placeholder or secret_is_placeholder):
+		return CheckResult(
+			"modal_credentials",
+			"fail",
+			"USE_MODAL_REMOTE=1 requires MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.",
+		)
+
+	if id_is_placeholder and secret_is_placeholder:
+		return CheckResult(
+			"modal_credentials",
+			"warn",
+			"Modal credentials are not set. This is fine for local-only mode.",
+		)
+
+	return CheckResult("modal_credentials", "pass", "Modal credentials are configured.")
+
+
 def _check_redis() -> CheckResult:
 	redis_url = os.getenv("REDIS_URL", "").strip()
 	allow_fake_redis = os.getenv("ALLOW_FAKE_REDIS", "1").strip() in {"1", "true", "yes", "on"}
@@ -129,6 +166,7 @@ def main() -> int:
 
 	checks = [
 		_check_env_mode(),
+		_check_modal_credentials(),
 		_check_redis(),
 		_check_vllm_chat(),
 		_check_embeddings(),
