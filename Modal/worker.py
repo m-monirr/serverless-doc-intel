@@ -42,6 +42,10 @@ _worker_metrics: dict[str, int] = {
 	"llm_chunk_success": 0,
 	"llm_chunk_failure": 0,
 }
+_worker_last_errors: dict[str, str] = {
+	"remote_last_error": "",
+	"llm_last_error": "",
+}
 
 
 def _incr_metric(name: str) -> None:
@@ -49,10 +53,16 @@ def _incr_metric(name: str) -> None:
 		_worker_metrics[name] = _worker_metrics.get(name, 0) + 1
 
 
+def _set_last_error(name: str, message: str) -> None:
+	with _metrics_lock:
+		_worker_last_errors[name] = message
+
+
 def get_worker_runtime_stats() -> dict[str, Any]:
 	"""Return runtime worker mode and counters for observability."""
 	with _metrics_lock:
 		counts = dict(_worker_metrics)
+		errors = dict(_worker_last_errors)
 
 	return {
 		"mode": {
@@ -63,6 +73,7 @@ def get_worker_runtime_stats() -> dict[str, Any]:
 			**llm_mode_status(),
 		},
 		"counters": counts,
+		"last_errors": errors,
 	}
 
 
@@ -124,8 +135,9 @@ def _build_result(chunk: dict[str, Any]) -> dict[str, Any]:
 				"key_points": points,
 				"importance_score": score,
 			}
-		except Exception:
+		except Exception as exc:
 			_incr_metric("llm_chunk_failure")
+			_set_last_error("llm_last_error", str(exc))
 			if not ALLOW_LLM_FALLBACK:
 				raise
 
@@ -164,8 +176,9 @@ def process_chunk(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 			result = _call_modal_remote(job_id, chunk)
 			_incr_metric("remote_success")
 			return result
-		except Exception:
+		except Exception as exc:
 			_incr_metric("remote_failure")
+			_set_last_error("remote_last_error", str(exc))
 			if not MODAL_LOCAL_FALLBACK:
 				raise
 			_incr_metric("fallback_used")
@@ -173,7 +186,7 @@ def process_chunk(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 	return process_chunk_local(job_id, chunk)
 
 
-@app.function()
+@app.function(secrets=[modal.Secret.from_name("pdf-pipeline-secrets")])
 def process_chunk_remote(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 	"""Modal-deployed worker function that computes one chunk result payload."""
 	# Do not write to Redis here. The API process persists returned payload centrally.

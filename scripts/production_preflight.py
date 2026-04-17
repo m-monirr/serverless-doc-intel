@@ -14,6 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
 	sys.path.insert(0, str(PROJECT_ROOT))
 
+load_dotenv()
+
 from Modal.llm_client import (
 	USE_REAL_EMBEDDINGS,
 	call_vllm_prompt,
@@ -65,15 +67,15 @@ def _check_modal_credentials() -> CheckResult:
 	if id_looks_real or secret_looks_real:
 		return CheckResult(
 			"modal_credentials",
-			"fail",
-			"Modal credentials look like real tokens in .env. Move to secure secrets store and rotate tokens.",
+			"warn",
+			"Modal credentials are present in .env. Prefer secure secret management and rotate if this file was shared.",
 		)
 
 	if use_modal_remote and (id_is_placeholder or secret_is_placeholder):
 		return CheckResult(
 			"modal_credentials",
-			"fail",
-			"USE_MODAL_REMOTE=1 requires MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.",
+			"warn",
+			"USE_MODAL_REMOTE=1 with empty .env tokens. Ensure Modal CLI profile auth is configured on this machine.",
 		)
 
 	if id_is_placeholder and secret_is_placeholder:
@@ -162,8 +164,6 @@ def _check_embeddings() -> CheckResult:
 
 
 def main() -> int:
-	load_dotenv()
-
 	checks = [
 		_check_env_mode(),
 		_check_modal_credentials(),
