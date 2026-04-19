@@ -32,6 +32,10 @@ USE_MODAL_REMOTE = _is_enabled(os.getenv("USE_MODAL_REMOTE"), default=False)
 MODAL_LOCAL_FALLBACK = _is_enabled(os.getenv("MODAL_LOCAL_FALLBACK"), default=True)
 MODAL_WORKER_APP = os.getenv("MODAL_WORKER_APP", "pdf-pipeline-worker")
 MODAL_WORKER_FUNCTION = os.getenv("MODAL_WORKER_FUNCTION", "process_chunk_remote")
+USE_LLM_CHUNK_ANALYSIS = _is_enabled(
+	os.getenv("USE_LLM_CHUNK_ANALYSIS"),
+	default=False,
+)
 
 _metrics_lock = threading.Lock()
 _worker_metrics: dict[str, int] = {
@@ -70,6 +74,7 @@ def get_worker_runtime_stats() -> dict[str, Any]:
 			"modal_local_fallback": MODAL_LOCAL_FALLBACK,
 			"modal_worker_app": MODAL_WORKER_APP,
 			"modal_worker_function": MODAL_WORKER_FUNCTION,
+			"use_llm_chunk_analysis": USE_LLM_CHUNK_ANALYSIS,
 			**llm_mode_status(),
 		},
 		"counters": counts,
@@ -113,7 +118,7 @@ def _build_result(chunk: dict[str, Any]) -> dict[str, Any]:
 	chunk_id = int(chunk["chunk_id"])
 	text = str(chunk.get("text", ""))
 
-	if USE_LLM_ANALYSIS:
+	if USE_LLM_ANALYSIS and USE_LLM_CHUNK_ANALYSIS:
 		prompt = (
 			"Analyze this document chunk and return ONLY valid JSON with keys: "
 			"summary (string), key_points (array of strings), importance_score (integer 1-5).\n\n"
