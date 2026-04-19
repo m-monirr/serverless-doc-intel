@@ -26,7 +26,11 @@ from api.tracker import (
 	record_upload,
 )
 from Modal.aggregator import aggregate, render_markdown_report
-from Modal.worker import get_worker_runtime_stats, process_chunk
+from Modal.worker import (
+	USE_LLM_SELECTED_CHUNKS_ONLY,
+	get_worker_runtime_stats,
+	process_chunk,
+)
 
 # Service layer for ingest/status/result/quota/stream routes.
 # This keeps API route handlers thin and focused on HTTP wiring.
@@ -164,12 +168,13 @@ def _dispatch_chunk_tasks(
 	mode: str,
 	job_id: str,
 	chunks: list[dict[str, Any]],
+	selected_chunk_ids: set[int],
 ) -> None:
 	"""Schedule chunk processing in sequential or parallel mode."""
 	if mode == "sequential":
-		background_tasks.add_task(_run_sequential, job_id, chunks)
+		background_tasks.add_task(_run_sequential, job_id, chunks, selected_chunk_ids)
 	else:
-		background_tasks.add_task(_run_parallel, job_id, chunks)
+		background_tasks.add_task(_run_parallel, job_id, chunks, selected_chunk_ids)
 
 
 async def _watch_and_aggregate(job_id: str, total_chunks: int) -> None:
@@ -201,18 +206,38 @@ async def _watch_and_aggregate(job_id: str, total_chunks: int) -> None:
 	get_redis().hset(job_id, "status", "error")
 
 
-async def _run_sequential(job_id: str, chunks: list[dict[str, Any]]) -> None:
+async def _run_sequential(
+	job_id: str,
+	chunks: list[dict[str, Any]],
+	selected_chunk_ids: set[int],
+) -> None:
 	"""Process chunks one-by-one (useful for easier debugging)."""
 	loop = asyncio.get_running_loop()
 	for chunk in chunks:
-		await loop.run_in_executor(_executor, process_chunk, job_id, chunk)
+		chunk_id = int(chunk.get("chunk_id", -1))
+		llm_enabled = (
+			chunk_id in selected_chunk_ids if USE_LLM_SELECTED_CHUNKS_ONLY else None
+		)
+		await loop.run_in_executor(_executor, process_chunk, job_id, chunk, llm_enabled)
 
 
-async def _run_parallel(job_id: str, chunks: list[dict[str, Any]]) -> None:
+async def _run_parallel(
+	job_id: str,
+	chunks: list[dict[str, Any]],
+	selected_chunk_ids: set[int],
+) -> None:
 	"""Process all chunks concurrently using the shared thread pool."""
 	loop = asyncio.get_running_loop()
 	tasks = [
-		loop.run_in_executor(_executor, process_chunk, job_id, chunk)
+		loop.run_in_executor(
+			_executor,
+			process_chunk,
+			job_id,
+			chunk,
+			(int(chunk.get("chunk_id", -1)) in selected_chunk_ids)
+			if USE_LLM_SELECTED_CHUNKS_ONLY
+			else None,
+		)
 		for chunk in chunks
 	]
 	await asyncio.gather(*tasks)
@@ -268,13 +293,13 @@ async def ingest_pdf(
 	if chunks is None:
 		raise HTTPException(status_code=500, detail="Chunk extraction failed unexpectedly.")
 
-	selected_chunk_ids = select_representative_chunk_ids(chunks, top_k=RETRIEVAL_TOP_K)
+	selected_chunk_ids = set(select_representative_chunk_ids(chunks, top_k=RETRIEVAL_TOP_K))
 
 	record_upload(user_ip)
 	init_job(job_id, len(chunks), file_md5=file_md5)
-	get_redis().hset(job_id, "selected_chunk_ids", json.dumps(selected_chunk_ids))
+	get_redis().hset(job_id, "selected_chunk_ids", json.dumps(sorted(selected_chunk_ids)))
 	_mark_job_started(job_id)
-	_dispatch_chunk_tasks(background_tasks, mode, job_id, chunks)
+	_dispatch_chunk_tasks(background_tasks, mode, job_id, chunks, selected_chunk_ids)
 	background_tasks.add_task(_watch_and_aggregate, job_id, len(chunks))
 
 	return {

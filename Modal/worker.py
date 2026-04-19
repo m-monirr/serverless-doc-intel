@@ -36,6 +36,10 @@ USE_LLM_CHUNK_ANALYSIS = _is_enabled(
 	os.getenv("USE_LLM_CHUNK_ANALYSIS"),
 	default=False,
 )
+USE_LLM_SELECTED_CHUNKS_ONLY = _is_enabled(
+	os.getenv("USE_LLM_SELECTED_CHUNKS_ONLY"),
+	default=True,
+)
 
 _metrics_lock = threading.Lock()
 _worker_metrics: dict[str, int] = {
@@ -75,6 +79,7 @@ def get_worker_runtime_stats() -> dict[str, Any]:
 			"modal_worker_app": MODAL_WORKER_APP,
 			"modal_worker_function": MODAL_WORKER_FUNCTION,
 			"use_llm_chunk_analysis": USE_LLM_CHUNK_ANALYSIS,
+			"use_llm_selected_chunks_only": USE_LLM_SELECTED_CHUNKS_ONLY,
 			**llm_mode_status(),
 		},
 		"counters": counts,
@@ -113,12 +118,15 @@ def _summarize_text(text: str) -> tuple[str, list[str], int]:
 	return preview, points, score
 
 
-def _build_result(chunk: dict[str, Any]) -> dict[str, Any]:
+def _build_result(chunk: dict[str, Any], llm_enabled: bool | None = None) -> dict[str, Any]:
 	"""Create normalized chunk output payload from raw chunk text."""
 	chunk_id = int(chunk["chunk_id"])
 	text = str(chunk.get("text", ""))
+	use_llm_for_chunk = USE_LLM_ANALYSIS and (
+		USE_LLM_CHUNK_ANALYSIS or bool(llm_enabled)
+	)
 
-	if USE_LLM_ANALYSIS and USE_LLM_CHUNK_ANALYSIS:
+	if use_llm_for_chunk:
 		prompt = (
 			"Analyze this document chunk and return ONLY valid JSON with keys: "
 			"summary (string), key_points (array of strings), importance_score (integer 1-5).\n\n"
@@ -155,10 +163,10 @@ def _build_result(chunk: dict[str, Any]) -> dict[str, Any]:
 	}
 
 
-def process_chunk_local(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
+def process_chunk_local(job_id: str, chunk: dict[str, Any], llm_enabled: bool | None = None) -> dict[str, Any]:
 	"""Process one chunk and write result to tracker storage."""
 	# This writes one per-chunk result and increments done_chunks in Redis.
-	result = _build_result(chunk)
+	result = _build_result(chunk, llm_enabled=llm_enabled)
 	push_result(job_id, result)
 	_incr_metric("local_success")
 	return result
@@ -174,7 +182,7 @@ def _call_modal_remote(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 	return result
 
 
-def process_chunk(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
+def process_chunk(job_id: str, chunk: dict[str, Any], llm_enabled: bool | None = None) -> dict[str, Any]:
 	"""Process one chunk via Modal remote worker, or local fallback."""
 	if USE_MODAL_REMOTE:
 		try:
@@ -188,7 +196,7 @@ def process_chunk(job_id: str, chunk: dict[str, Any]) -> dict[str, Any]:
 				raise
 			_incr_metric("fallback_used")
 
-	return process_chunk_local(job_id, chunk)
+	return process_chunk_local(job_id, chunk, llm_enabled=llm_enabled)
 
 
 @app.function(secrets=[modal.Secret.from_name("pdf-pipeline-secrets")])

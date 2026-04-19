@@ -1,6 +1,7 @@
 """Final aggregation pass."""
 
 import json
+import re
 from typing import Any
 
 from Modal.llm_client import (
@@ -10,6 +11,23 @@ from Modal.llm_client import (
 	parse_json_object,
 )
 from api.tracker import cache_result_by_md5, get_job, set_final_output
+
+
+def _clean_text(value: str) -> str:
+	text = " ".join(str(value).split())
+	text = re.sub(r"<!--\s*image\s*-->", " ", text, flags=re.IGNORECASE)
+	text = text.replace("```", " ")
+	return " ".join(text.split()).strip()
+
+
+def _is_noisy(value: str) -> bool:
+	text = _clean_text(value)
+	if len(text) < 24:
+		return True
+	alnum = sum(ch.isalnum() for ch in text)
+	if alnum / max(1, len(text)) < 0.4:
+		return True
+	return False
 
 
 def render_markdown_report(final_output: dict[str, Any], job_id: str | None = None) -> str:
@@ -109,23 +127,50 @@ def aggregate(job_id: str) -> dict[str, Any]:
 	# 2) Merge key points across chunks with de-duplication.
 	for r in results:
 		for point in r.get("key_points", []):
-			if point and point not in all_points:
-				all_points.append(point)
+			clean_point = _clean_text(point)
+			if clean_point and not _is_noisy(clean_point) and clean_point not in all_points:
+				all_points.append(clean_point)
 
 	if not all_points:
-		all_points = [r.get("summary", "") for r in results if r.get("summary")]
+		all_points = [
+			_clean_text(r.get("summary", ""))
+			for r in results
+			if r.get("summary") and not _is_noisy(str(r.get("summary", "")))
+		]
+
+	clean_results: list[dict[str, Any]] = []
+	for item in results:
+		summary = _clean_text(str(item.get("summary", "")))
+		if _is_noisy(summary):
+			continue
+		points = [
+			_clean_text(str(p))
+			for p in item.get("key_points", [])
+			if not _is_noisy(str(p))
+		]
+		clean_results.append(
+			{
+				"chunk_id": int(item.get("chunk_id", 0)),
+				"summary": summary,
+				"key_points": points,
+				"importance_score": int(item.get("importance_score", 3)),
+			}
+		)
+
+	if clean_results:
+		results = clean_results
 
 	def _fallback_final() -> dict[str, Any]:
-		abstract = " ".join(r.get("summary", "") for r in results[:4]).strip()
+		abstract = " ".join(_clean_text(r.get("summary", "")) for r in results[:4]).strip()
 		abstract_local = abstract[:1200] if abstract else "Document processed successfully."
 		return {
 			"abstract": abstract_local,
 			"top_key_points": all_points[:10],
 			"documentation": {
-				"introduction": results[0].get("summary", "") if results else "",
-				"methods": results[len(results) // 3].get("summary", "") if results else "",
-				"findings": results[(2 * len(results)) // 3].get("summary", "") if results else "",
-				"conclusion": results[-1].get("summary", "") if results else "",
+				"introduction": _clean_text(results[0].get("summary", "")) if results else "",
+				"methods": _clean_text(results[len(results) // 3].get("summary", "")) if results else "",
+				"findings": _clean_text(results[(2 * len(results)) // 3].get("summary", "")) if results else "",
+				"conclusion": _clean_text(results[-1].get("summary", "")) if results else "",
 			},
 			"total_chunks": job["total_chunks"],
 			"failed_chunks": max(0, job["total_chunks"] - len(results)),
@@ -145,8 +190,12 @@ def aggregate(job_id: str) -> dict[str, Any]:
 				"chunks": [
 					{
 						"chunk_id": int(r.get("chunk_id", 0)),
-						"summary": str(r.get("summary", "")),
-						"key_points": r.get("key_points", []),
+						"summary": _clean_text(str(r.get("summary", ""))),
+						"key_points": [
+							_clean_text(str(x))
+							for x in r.get("key_points", [])
+							if not _is_noisy(str(x))
+						],
 						"importance_score": int(r.get("importance_score", 3)),
 					}
 					for r in llm_source_results
@@ -154,6 +203,8 @@ def aggregate(job_id: str) -> dict[str, Any]:
 			}
 			prompt = (
 				"Create one final integrated review from the JSON chunk analyses below. "
+				"Ignore OCR artifacts, broken markup, XML snippets, and image placeholders. "
+				"Write concise and readable prose. "
 				"Return ONLY valid JSON with keys: abstract (string), top_key_points (array of strings), "
 				"documentation (object with introduction, methods, findings, conclusion strings).\n\n"
 				f"chunk_analyses_json:\n{json.dumps(payload)}"
