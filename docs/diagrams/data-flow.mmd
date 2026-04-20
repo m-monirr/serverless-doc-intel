@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    participant User
+    participant UI as Streamlit UI
+    participant API as FastAPI
+    participant SVC as Ingest Service
+    participant WRK as Worker Pool
+    participant AGG as Aggregator
+    participant LLM as Modal LLM
+    participant STORE as Redis/Tracker
+
+    User->>UI: Upload PDF
+    UI->>API: POST /ingest?mode=parallel|sequential
+    API->>SVC: ingest_pdf()
+    SVC->>STORE: quota + cache + init job
+    SVC->>WRK: dispatch chunk tasks
+    API-->>UI: job_id
+
+    loop While running
+        UI->>API: GET /status/{job_id}
+        API->>STORE: read progress
+        API-->>UI: done/total/progress_pct
+    end
+
+    WRK->>STORE: store chunk outputs
+    SVC->>AGG: aggregate(job_id)
+    AGG->>LLM: final synthesis
+    LLM-->>AGG: structured analysis
+    AGG->>STORE: final_output + done
+
+    UI->>API: GET /result/{job_id}/markdown
+    API-->>UI: markdown report

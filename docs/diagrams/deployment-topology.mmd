@@ -1,0 +1,32 @@
+flowchart TB
+    classDef local fill:#EEF2FF,stroke:#3730A3,color:#0B1220,stroke-width:1.5px;
+    classDef cloud fill:#ECFEFF,stroke:#0E7490,color:#0B1220,stroke-width:1.5px;
+    classDef data fill:#F8FAFC,stroke:#334155,color:#0B1220,stroke-width:1.5px;
+
+    subgraph LOCAL[Local Machine]
+        FE[Streamlit :8503]
+        BE[FastAPI/Uvicorn :8010]
+        LW[Local Worker]
+    end
+
+    subgraph MODAL[Modal Cloud]
+        MW[Remote Worker]
+        VL[vLLM Service\nchat + embeddings]
+    end
+
+    subgraph DATA[Data Layer]
+        R[(Redis or FakeRedis)]
+    end
+
+    FE --> BE
+    BE --> LW
+    BE -->|optional| MW
+    BE --> VL
+    MW --> VL
+    BE --> R
+    LW --> R
+    MW --> R
+
+    class FE,BE,LW local;
+    class MW,VL cloud;
+    class R data;

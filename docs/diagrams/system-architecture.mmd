@@ -1,0 +1,47 @@
+flowchart LR
+    classDef client fill:#EAF4FF,stroke:#1D4ED8,color:#0B1220,stroke-width:1.5px;
+    classDef api fill:#ECFDF5,stroke:#047857,color:#0B1220,stroke-width:1.5px;
+    classDef process fill:#FFF7ED,stroke:#C2410C,color:#0B1220,stroke-width:1.5px;
+    classDef llm fill:#F5F3FF,stroke:#6D28D9,color:#0B1220,stroke-width:1.5px;
+    classDef store fill:#F8FAFC,stroke:#334155,color:#0B1220,stroke-width:1.5px;
+
+    subgraph C1[Client Layer]
+        U[User]
+        UI[Streamlit Frontend]
+    end
+
+    subgraph A1[API Layer]
+        API[FastAPI api/main.py]
+        ING[Ingest Service]
+    end
+
+    subgraph P1[Processing Layer]
+        OCR[Docling Extract + Clean]
+        CHK[Chunker]
+        RET[Retrieval Selector]
+        WRK[Chunk Worker]
+        AGG[Aggregator]
+    end
+
+    subgraph I1[Intelligence Layer]
+        CHAT[Modal Chat Endpoint]
+        EMB[Modal Embeddings Endpoint]
+    end
+
+    subgraph S1[State Layer]
+        R[(Redis/FakeRedis)]
+    end
+
+    U --> UI -->|POST /ingest| API
+    API --> ING --> OCR --> CHK --> RET --> WRK --> AGG
+    WRK --> R
+    AGG --> CHAT
+    RET --> EMB
+    AGG --> R
+    API -->|status/result/markdown| UI
+
+    class U,UI client;
+    class API,ING api;
+    class OCR,CHK,RET,WRK,AGG process;
+    class CHAT,EMB llm;
+    class R store;
